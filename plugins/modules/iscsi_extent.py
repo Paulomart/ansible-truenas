@@ -4,9 +4,13 @@ __metaclass__ = type
 DOCUMENTATION = r"""
 ---
 module: iscsi_extent
-short_description: Manage iSCSI Extents
+short_description: Manage iSCSI Extents (with name-based idempotency)
 description:
   - Create, update, and delete iSCSI Extents.
+  - If C(id) is not provided, the module tries to find an existing extent by matching C(name).
+  - If exactly one matching extent is found, it will be updated.
+  - If none are found, it will be created.
+  - If multiple matches are found, the module fails to avoid ambiguity.
 version_added: "1.4.3"
 options:
   state:
@@ -17,15 +21,17 @@ options:
     default: present
   id:
     description:
-      - Extent ID (for update/delete).
+      - Numeric ID of an existing iSCSI extent (for update/delete).
+      - If not provided, we search by C(name) instead.
     type: int
   name:
     description:
-      - Name of the extent.
+      - Name of the extent (must be unique).
+      - Used to look up an existing extent if C(id) is not provided.
     type: str
   type:
     description:
-      - Whether extent is FILE or DISK.
+      - Whether the extent is FILE or DISK.
     type: str
     choices: [ FILE, DISK ]
   disk:
@@ -90,19 +96,23 @@ options:
 """
 
 EXAMPLES = r"""
-- name: Create a FILE-based iSCSI extent
+- name: Create or update a DISK-based iSCSI extent by name
   iscsi_extent:
     state: present
-    name: "my_file_extent"
-    type: "FILE"
-    path: "/mnt/tank/iscsi_extent.img"
-    filesize: 1073741824
-    blocksize: 512
+    name: test-extent
+    type: DISK
+    disk: zvol/test-expansion/test-iscsi
 
-- name: Delete iSCSI extent
+- name: Delete an extent by name
   iscsi_extent:
     state: absent
-    id: 5
+    name: test-extent
+    remove: true
+
+- name: Delete an extent by ID
+  iscsi_extent:
+    state: absent
+    id: 15
     remove: true
 """
 
@@ -152,96 +162,147 @@ def main():
     params = module.params
     state = params["state"]
     ext_id = params["id"]
+    name = (
+        params["name"].strip() if params["name"] else None
+    )  # strip() to remove trailing spaces
 
-    # Helper to find an extent by ID
-    def find_extent_by_id(eid):
-        try:
-            res = mw.call("iscsi.extent.query", [["id", "=", eid]])
-            return res[0] if res else None
-        except Exception as e:
-            module.fail_json(msg=f"Error querying iSCSI extent (id={eid}): {e}")
+    # -------------------------------------------------------------------
+    # Fetch all extents in one go, so we can debug/log them if needed.
+    # -------------------------------------------------------------------
+    try:
+        all_extents = mw.call("iscsi.extent.query")
+    except Exception as e:
+        module.fail_json(msg=f"Error listing all iSCSI extents: {e}")
 
-    existing = None
-    if ext_id:
-        existing = find_extent_by_id(ext_id)
+    # Debug: Uncomment to see what we discovered
+    # module.fail_json(msg=f"Debug: all_extents={all_extents}")
 
+    # Helper: find an extent by numeric ID
+    def find_by_id(eid, extents):
+        for e in extents:
+            if e["id"] == eid:
+                return e
+        return None
+
+    # Helper: find extents by name (exact match, ignoring leading/trailing whitespace)
+    def find_by_name(ext_name, extents):
+        matches = []
+        for e in extents:
+            # Also strip stored name in case of trailing spaces in TrueNAS
+            stored_name = e["name"].strip() if e["name"] else None
+            if stored_name == ext_name:
+                matches.append(e)
+        return matches
+
+    # -------------------------------------------------------------------
     # state=absent
+    # -------------------------------------------------------------------
     if state == "absent":
-        if not ext_id:
-            module.fail_json(msg="id is required to delete an iSCSI extent.")
+        # We can identify the extent either by ID or by name
+        existing = None
+        if ext_id is not None:
+            existing = find_by_id(ext_id, all_extents)
+        elif name:
+            matches = find_by_name(name, all_extents)
+            if len(matches) > 1:
+                module.fail_json(
+                    msg=(
+                        f"Multiple iSCSI extents found with name '{name}'. "
+                        f"Cannot safely delete. Provide 'id' instead."
+                    )
+                )
+            elif len(matches) == 1:
+                existing = matches[0]
+            else:
+                existing = None
+
         if not existing:
             result["changed"] = False
-            result["msg"] = f"Extent {ext_id} does not exist."
+            result["msg"] = "iSCSI extent does not exist."
             module.exit_json(**result)
         else:
+            # Perform deletion
             if module.check_mode:
-                result["msg"] = f"Would have deleted extent {ext_id}"
+                result["msg"] = (
+                    f"Would have deleted iSCSI extent {existing['id']} (name='{existing['name']}')"
+                )
             else:
                 try:
                     mw.call(
-                        "iscsi.extent.delete", ext_id, params["remove"], params["force"]
+                        "iscsi.extent.delete",
+                        existing["id"],
+                        params["remove"],
+                        params["force"],
                     )
-                    result["msg"] = f"Deleted extent {ext_id}"
+                    result["msg"] = (
+                        f"Deleted iSCSI extent {existing['id']} (name='{existing['name']}')"
+                    )
                 except Exception as e:
-                    module.fail_json(msg=f"Error deleting extent {ext_id}: {e}")
+                    module.fail_json(msg=f"Error deleting extent {existing['id']}: {e}")
             result["changed"] = True
             module.exit_json(**result)
 
-    # state=present
+    # -------------------------------------------------------------------
+    # state=present (create or update)
+    # -------------------------------------------------------------------
+    existing = None
+    if ext_id is not None:
+        # Find by ID explicitly
+        existing = find_by_id(ext_id, all_extents)
+    else:
+        # If no ID given, attempt to find by name
+        if not name:
+            module.fail_json(
+                msg="Must provide either 'id' or 'name' to manage an iSCSI extent (state=present)."
+            )
+
+        matches = find_by_name(name, all_extents)
+        if len(matches) > 1:
+            module.fail_json(
+                msg=(
+                    f"Multiple iSCSI extents found with name '{name}'. "
+                    "Cannot safely manage. Provide 'id' instead."
+                )
+            )
+        elif len(matches) == 1:
+            existing = matches[0]
+
+    # If we found an existing extent, we update it
     if existing:
-        # Update
+        ext_id = existing["id"]
         updates = {}
-        if params["name"] is not None and existing["name"] != params["name"]:
-            updates["name"] = params["name"]
-        if params["type"] is not None and existing["type"] != params["type"]:
-            updates["type"] = params["type"]
-        if params["disk"] is not None and existing["disk"] != params["disk"]:
-            updates["disk"] = params["disk"]
-        if params["path"] is not None and existing["path"] != params["path"]:
-            updates["path"] = params["path"]
-        if (
-            params["filesize"] is not None
-            and existing["filesize"] != params["filesize"]
-        ):
-            updates["filesize"] = params["filesize"]
-        if (
-            params["blocksize"] is not None
-            and existing["blocksize"] != params["blocksize"]
-        ):
-            updates["blocksize"] = params["blocksize"]
-        if (
-            params["pblocksize"] is not None
-            and existing["pblocksize"] != params["pblocksize"]
-        ):
-            updates["pblocksize"] = params["pblocksize"]
-        if (
-            params["avail_threshold"] is not None
-            and existing["avail_threshold"] != params["avail_threshold"]
-        ):
-            updates["avail_threshold"] = params["avail_threshold"]
-        if params["comment"] is not None and existing["comment"] != params["comment"]:
-            updates["comment"] = params["comment"]
-        if (
-            params["insecure_tpc"] is not None
-            and existing["insecure_tpc"] != params["insecure_tpc"]
-        ):
-            updates["insecure_tpc"] = params["insecure_tpc"]
-        if params["xen"] is not None and existing["xen"] != params["xen"]:
-            updates["xen"] = params["xen"]
-        if params["rpm"] is not None and existing["rpm"] != params["rpm"]:
-            updates["rpm"] = params["rpm"]
-        if params["ro"] is not None and existing["ro"] != params["ro"]:
-            updates["ro"] = params["ro"]
-        if params["enabled"] is not None and existing["enabled"] != params["enabled"]:
-            updates["enabled"] = params["enabled"]
+
+        # Shorthand function to compare a field in 'existing' with a param
+        def maybe_update(key):
+            param_val = params[key]
+            if param_val is not None and existing.get(key) != param_val:
+                updates[key] = param_val
+
+        # Compare each field
+        maybe_update("name")
+        maybe_update("type")
+        maybe_update("disk")
+        maybe_update("path")
+        maybe_update("filesize")
+        maybe_update("blocksize")
+        maybe_update("pblocksize")
+        maybe_update("avail_threshold")
+        maybe_update("comment")
+        maybe_update("insecure_tpc")
+        maybe_update("xen")
+        maybe_update("rpm")
+        maybe_update("ro")
+        maybe_update("enabled")
 
         if not updates:
             result["changed"] = False
             result["extent"] = existing
-            result["msg"] = "No changes needed."
+            result["msg"] = f"Extent {ext_id} is already up-to-date."
         else:
             if module.check_mode:
-                result["msg"] = f"Would have updated extent {ext_id} with {updates}"
+                result["msg"] = (
+                    f"Would have updated iSCSI extent {ext_id} with {updates}"
+                )
                 result["changed"] = True
             else:
                 try:
@@ -251,18 +312,21 @@ def main():
                     result["msg"] = f"Updated iSCSI extent {ext_id}"
                 except Exception as e:
                     module.fail_json(msg=f"Error updating extent {ext_id}: {e}")
+
     else:
-        # Create
-        if not params["name"]:
-            module.fail_json(msg="name is required to create an iSCSI extent.")
+        # No existing extent found => create new
+        if not name:
+            module.fail_json(
+                msg="name is required to create a new iSCSI extent (unless 'id' is given)."
+            )
         if not params["type"]:
-            module.fail_json(msg="type is required to create an iSCSI extent.")
+            module.fail_json(msg="'type' is required to create a new iSCSI extent.")
 
         payload = {
-            "name": params["name"],
+            "name": name,
             "type": params["type"],
         }
-        # Add optional fields if provided
+
         for field in [
             "disk",
             "path",
@@ -288,7 +352,7 @@ def main():
                 created = mw.call("iscsi.extent.create", payload)
                 result["extent"] = created
                 result["changed"] = True
-                result["msg"] = "Created new iSCSI extent"
+                result["msg"] = f"Created new iSCSI extent '{name}'"
             except Exception as e:
                 module.fail_json(msg=f"Error creating iSCSI extent: {e}")
 
