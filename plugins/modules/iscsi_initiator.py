@@ -6,18 +6,18 @@ DOCUMENTATION = r"""
 module: iscsi_initiator
 short_description: Manage iSCSI Initiators
 description:
-  - Create, manage, and delete iSCSI Initiators. Also supports query.
+  - Create, update, and delete iSCSI Initiators.
 version_added: "1.4.3"
 options:
   state:
     description:
-      - Whether the initiator should exist, not exist, or be queried.
+      - Whether the initiator should exist or not.
     type: str
-    choices: [ absent, present, query ]
+    choices: [ absent, present ]
     default: present
   id:
     description:
-      - ID of existing initiator (for update/delete/query).
+      - ID of existing initiator (for update or delete).
     type: int
   initiators:
     description:
@@ -45,21 +45,16 @@ EXAMPLES = r"""
       - "10.0.0.0/24"
     comment: "My RHEL client"
 
-- name: Delete iSCSI initiator with ID=5
+- name: Delete an iSCSI initiator
   iscsi_initiator:
     state: absent
-    id: 5
-
-- name: Query initiator with ID=5
-  iscsi_initiator:
-    state: query
     id: 5
 """
 
 RETURN = r"""
 initiator:
   description:
-    - A data structure describing the iSCSI initiator (created/updated/queried).
+    - A data structure describing the created or updated iSCSI initiator.
   type: dict
 """
 
@@ -72,9 +67,7 @@ from ansible_collections.arensb.truenas.plugins.module_utils.middleware import (
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            state=dict(
-                type="str", choices=["absent", "present", "query"], default="present"
-            ),
+            state=dict(type="str", choices=["absent", "present"], default="present"),
             id=dict(type="int"),
             initiators=dict(type="list", elements="str"),
             auth_network=dict(type="list", elements="str"),
@@ -100,16 +93,6 @@ def main():
     existing = None
     if initiator_id:
         existing = find_initiator_by_id(initiator_id)
-
-    # state=query
-    if state == "query":
-        if not initiator_id:
-            module.fail_json(msg="id is required to query an iSCSI initiator.")
-        if existing:
-            result["initiator"] = existing
-            module.exit_json(**result)
-        else:
-            module.fail_json(msg=f"No iSCSI initiator found with id={initiator_id}")
 
     # state=absent
     if state == "absent":

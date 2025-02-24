@@ -6,18 +6,18 @@ DOCUMENTATION = r"""
 module: iscsi_extent
 short_description: Manage iSCSI Extents
 description:
-  - Create, manage, and delete iSCSI Extents. Also supports query.
+  - Create, update, and delete iSCSI Extents.
 version_added: "1.4.3"
 options:
   state:
     description:
-      - Whether the extent should exist (present), not exist (absent), or just be queried (query).
+      - Whether the extent should exist or not.
     type: str
-    choices: [ absent, present, query ]
+    choices: [ absent, present ]
     default: present
   id:
     description:
-      - Extent ID (for update/delete/query).
+      - Extent ID (for update/delete).
     type: int
   name:
     description:
@@ -104,17 +104,12 @@ EXAMPLES = r"""
     state: absent
     id: 5
     remove: true
-
-- name: Query iSCSI extent
-  iscsi_extent:
-    state: query
-    id: 5
 """
 
 RETURN = r"""
 extent:
   description:
-    - A data structure describing the iSCSI Extent (created/updated/queried).
+    - A data structure describing the created or updated iSCSI Extent.
   type: dict
 """
 
@@ -127,9 +122,7 @@ from ansible_collections.arensb.truenas.plugins.module_utils.middleware import (
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            state=dict(
-                type="str", choices=["absent", "present", "query"], default="present"
-            ),
+            state=dict(type="str", choices=["absent", "present"], default="present"),
             id=dict(type="int"),
             name=dict(type="str"),
             type=dict(type="str", choices=["FILE", "DISK"]),
@@ -172,16 +165,6 @@ def main():
     if ext_id:
         existing = find_extent_by_id(ext_id)
 
-    # state=query
-    if state == "query":
-        if not ext_id:
-            module.fail_json(msg="id is required to query an iSCSI extent.")
-        if existing:
-            result["extent"] = existing
-            module.exit_json(**result)
-        else:
-            module.fail_json(msg=f"No iSCSI extent found with id={ext_id}")
-
     # state=absent
     if state == "absent":
         if not ext_id:
@@ -208,7 +191,6 @@ def main():
     if existing:
         # Update
         updates = {}
-        # Compare each param with existing
         if params["name"] is not None and existing["name"] != params["name"]:
             updates["name"] = params["name"]
         if params["type"] is not None and existing["type"] != params["type"]:

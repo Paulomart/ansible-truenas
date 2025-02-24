@@ -6,18 +6,18 @@ DOCUMENTATION = r"""
 module: iscsi_portal
 short_description: Manage iSCSI Portals
 description:
-  - Create, manage, and delete iSCSI Portals. Also supports query.
+  - Create, update, and delete iSCSI Portals.
 version_added: "1.4.3"
 options:
   state:
     description:
-      - Whether this portal should exist, not exist, or be queried.
+      - Whether this portal should exist or not.
     type: str
-    choices: [ absent, present, query ]
+    choices: [ absent, present ]
     default: present
   id:
     description:
-      - ID of the portal (for update/delete/query).
+      - ID of the portal (for update/delete).
     type: int
   comment:
     description:
@@ -55,17 +55,12 @@ EXAMPLES = r"""
   iscsi_portal:
     state: absent
     id: 6
-
-- name: Query portal
-  iscsi_portal:
-    state: query
-    id: 6
 """
 
 RETURN = r"""
 portal:
   description:
-    - A data structure describing the portal (created/updated/queried).
+    - A data structure describing the created or updated iSCSI portal.
   type: dict
 """
 
@@ -78,9 +73,7 @@ from ansible_collections.arensb.truenas.plugins.module_utils.middleware import (
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            state=dict(
-                type="str", choices=["absent", "present", "query"], default="present"
-            ),
+            state=dict(type="str", choices=["absent", "present"], default="present"),
             id=dict(type="int"),
             comment=dict(type="str"),
             discovery_authmethod=dict(
@@ -110,17 +103,7 @@ def main():
     if pid:
         existing = find_portal_by_id(pid)
 
-    # query
-    if state == "query":
-        if not pid:
-            module.fail_json(msg="id is required to query a portal.")
-        if existing:
-            result["portal"] = existing
-            module.exit_json(**result)
-        else:
-            module.fail_json(msg=f"No portal found with id={pid}")
-
-    # absent
+    # state=absent
     if state == "absent":
         if not pid:
             module.fail_json(msg="id is required to delete a portal.")
@@ -139,7 +122,7 @@ def main():
             result["changed"] = True
         module.exit_json(**result)
 
-    # present
+    # state=present
     if existing:
         # update
         updates = {}
@@ -189,7 +172,7 @@ def main():
         if params["listen"] is not None:
             payload["listen"] = params["listen"]
         else:
-            # Possibly a default
+            # Provide a default
             payload["listen"] = [{"ip": "0.0.0.0", "port": 3260}]
 
         if module.check_mode:
