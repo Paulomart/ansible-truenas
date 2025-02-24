@@ -6,18 +6,18 @@ DOCUMENTATION = r"""
 module: iscsi_auth
 short_description: Manage iSCSI Authorized Access
 description:
-  - Create, manage, and delete iSCSI Authorized Access records.
+  - Create, update, and delete iSCSI Authorized Access records.
 version_added: "1.4.3"
 options:
   state:
     description:
-      - Whether the auth record should exist or not, or if we only want to query it.
+      - Whether the auth record should exist or not.
     type: str
-    choices: [ absent, present, query ]
+    choices: [ absent, present ]
     default: present
   id:
     description:
-      - ID of an existing iSCSI Auth record (for update/delete/query).
+      - ID of an existing iSCSI Auth record (for update or delete).
     type: int
   tag:
     description:
@@ -53,19 +53,14 @@ EXAMPLES = r"""
     peeruser: "peer_chap_user"
     peersecret: "myPeerSecret2"
 
-- name: Update iSCSI auth record
+- name: Update an iSCSI auth record
   iscsi_auth:
     state: present
     id: 3
     user: "new_chap_user"
     secret: "newChapSecret!"
 
-- name: Query iSCSI auth record
-  iscsi_auth:
-    state: query
-    id: 4
-
-- name: Delete iSCSI auth record
+- name: Delete an iSCSI auth record
   iscsi_auth:
     state: absent
     id: 4
@@ -74,7 +69,7 @@ EXAMPLES = r"""
 RETURN = r"""
 auth_record:
   description:
-    - A data structure describing the iSCSI Authorized Access (created/updated/queried).
+    - A data structure describing the created or updated iSCSI Authorized Access.
   type: dict
 """
 
@@ -87,9 +82,7 @@ from ansible_collections.arensb.truenas.plugins.module_utils.middleware import (
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            state=dict(
-                type="str", choices=["absent", "present", "query"], default="present"
-            ),
+            state=dict(type="str", choices=["absent", "present"], default="present"),
             id=dict(type="int"),
             tag=dict(type="int"),
             user=dict(type="str"),
@@ -107,7 +100,7 @@ def main():
     state = params["state"]
     record_id = params["id"]
 
-    # Helper function to find existing record by id
+    # Helper: find existing record by ID
     def find_auth_by_id(auth_id):
         try:
             recs = mw.call("iscsi.auth.query", [["id", "=", auth_id]])
@@ -119,21 +112,9 @@ def main():
     if record_id is not None:
         existing = find_auth_by_id(record_id)
 
-    # -------------------------------------
-    # state=query
-    # -------------------------------------
-    if state == "query":
-        if not record_id:
-            module.fail_json(msg="id is required to query iSCSI auth.")
-        if existing:
-            result["auth_record"] = existing
-            module.exit_json(**result)
-        else:
-            module.fail_json(msg=f"No iSCSI auth record found for id={record_id}")
-
-    # -------------------------------------
+    # --------------------------------------------------------
     # state=absent
-    # -------------------------------------
+    # --------------------------------------------------------
     if state == "absent":
         if not record_id:
             module.fail_json(msg="id is required to delete iSCSI auth.")
@@ -153,10 +134,9 @@ def main():
             result["changed"] = True
         module.exit_json(**result)
 
-    # -------------------------------------
-    # state=present
-    # -------------------------------------
-    # We either update if existing, or create if not existing.
+    # --------------------------------------------------------
+    # state=present (create or update)
+    # --------------------------------------------------------
     # Validate secrets if provided
     if params["secret"] and not (12 <= len(params["secret"]) <= 16):
         module.fail_json(msg="secret must be 12-16 characters.")
@@ -169,7 +149,6 @@ def main():
     if existing:
         # Update
         to_update = {}
-        # We'll compare each parameter with existing record's field
         if params["tag"] is not None and existing.get("tag") != params["tag"]:
             to_update["tag"] = params["tag"]
         if params["user"] is not None and existing.get("user") != params["user"]:
@@ -207,7 +186,6 @@ def main():
                     module.fail_json(msg=f"Error updating auth record {record_id}: {e}")
     else:
         # Create
-        # Must have at least tag, user, secret to be valid
         if (
             (params["tag"] is None)
             or (params["user"] is None)

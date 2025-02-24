@@ -6,18 +6,18 @@ DOCUMENTATION = r"""
 module: iscsi_targetextent
 short_description: Manage iSCSI Target-Extent associations
 description:
-  - Create, manage, and delete iSCSI Target-Extent associations (Associated Targets). Also supports query.
+  - Create, update, and delete iSCSI Target-Extent associations (Associated Targets).
 version_added: "1.4.3"
 options:
   state:
     description:
-      - Whether this association should exist, not exist, or be queried.
+      - Whether this association should exist or not.
     type: str
-    choices: [ absent, present, query ]
+    choices: [ absent, present ]
     default: present
   id:
     description:
-      - ID of an existing target-extent association (for update/delete/query).
+      - ID of an existing target-extent association (for update/delete).
     type: int
   target:
     description:
@@ -46,12 +46,7 @@ EXAMPLES = r"""
     extent: 20
     lunid: 5
 
-- name: Query association with ID=15
-  iscsi_targetextent:
-    state: query
-    id: 15
-
-- name: Delete association
+- name: Delete a target-extent association
   iscsi_targetextent:
     state: absent
     id: 15
@@ -61,7 +56,7 @@ EXAMPLES = r"""
 RETURN = r"""
 association:
   description:
-    - A data structure describing the target-extent association (created/updated/queried).
+    - A data structure describing the created or updated target-extent association.
   type: dict
 """
 
@@ -74,9 +69,7 @@ from ansible_collections.arensb.truenas.plugins.module_utils.middleware import (
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            state=dict(
-                type="str", choices=["absent", "present", "query"], default="present"
-            ),
+            state=dict(type="str", choices=["absent", "present"], default="present"),
             id=dict(type="int"),
             target=dict(type="int"),
             lunid=dict(type="int"),
@@ -104,23 +97,11 @@ def main():
     if assoc_id:
         existing = find_assoc_by_id(assoc_id)
 
-    # query
-    if state == "query":
-        if not assoc_id:
-            module.fail_json(
-                msg="id is required to query an iSCSI targetextent association."
-            )
-        if existing:
-            result["association"] = existing
-            module.exit_json(**result)
-        else:
-            module.fail_json(msg=f"No association found with id={assoc_id}")
-
     # absent
     if state == "absent":
         if not assoc_id:
             module.fail_json(
-                msg="id is required to delete an iSCSI targetextent association."
+                msg="id is required to delete a target-extent association."
             )
         if not existing:
             result["changed"] = False

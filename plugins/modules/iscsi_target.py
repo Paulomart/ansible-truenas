@@ -6,18 +6,18 @@ DOCUMENTATION = r"""
 module: iscsi_target
 short_description: Manage iSCSI Targets
 description:
-  - Create, manage, and delete iSCSI Targets. Also supports query.
+  - Create, update, and delete iSCSI Targets.
 version_added: "1.4.3"
 options:
   state:
     description:
-      - Whether the target should exist, not exist, or be queried.
+      - Whether the target should exist or not.
     type: str
-    choices: [ absent, present, query ]
+    choices: [ absent, present ]
     default: present
   id:
     description:
-      - ID of the target (for update/delete/query).
+      - ID of the target (for update/delete).
     type: int
   name:
     description:
@@ -52,11 +52,6 @@ EXAMPLES = r"""
         authmethod: "CHAP"
         auth: 3
 
-- name: Query target
-  iscsi_target:
-    state: query
-    id: 10
-
 - name: Delete target
   iscsi_target:
     state: absent
@@ -66,7 +61,7 @@ EXAMPLES = r"""
 RETURN = r"""
 target:
   description:
-    - A data structure describing the iSCSI target (created/updated/queried).
+    - A data structure describing the created or updated iSCSI target.
   type: dict
 """
 
@@ -79,9 +74,7 @@ from ansible_collections.arensb.truenas.plugins.module_utils.middleware import (
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            state=dict(
-                type="str", choices=["absent", "present", "query"], default="present"
-            ),
+            state=dict(type="str", choices=["absent", "present"], default="present"),
             id=dict(type="int"),
             name=dict(type="str"),
             alias=dict(type="str"),
@@ -108,16 +101,6 @@ def main():
     existing = None
     if tid:
         existing = find_target_by_id(tid)
-
-    # query
-    if state == "query":
-        if not tid:
-            module.fail_json(msg="id is required to query an iSCSI target.")
-        if existing:
-            result["target"] = existing
-            module.exit_json(**result)
-        else:
-            module.fail_json(msg=f"No iSCSI target found with id={tid}")
 
     # absent
     if state == "absent":
