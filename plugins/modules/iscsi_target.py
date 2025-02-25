@@ -4,9 +4,10 @@ __metaclass__ = type
 DOCUMENTATION = r"""
 ---
 module: iscsi_target
-short_description: Manage iSCSI Targets
+short_description: Manage iSCSI Targets (by id or by unique name)
 description:
   - Create, update, and delete iSCSI Targets.
+  - If C(id) is not provided, the module attempts to find an existing target by its unique C(name).
 version_added: "1.4.3"
 options:
   state:
@@ -17,11 +18,12 @@ options:
     default: present
   id:
     description:
-      - ID of the target (for update/delete).
+      - Numeric ID of the target (for update/delete).
+      - If not set, the module looks up by C(name).
     type: int
   name:
     description:
-      - iSCSI target name (often an IQN).
+      - iSCSI target name (often an IQN, e.g. iqn.2005-10.org.freenas.ctl:mytarget) must be unique.
     type: str
   alias:
     description:
@@ -40,7 +42,7 @@ options:
 """
 
 EXAMPLES = r"""
-- name: Create an iSCSI target
+- name: Create or update an iSCSI target by unique name
   iscsi_target:
     state: present
     name: "iqn.2005-10.org.freenas.ctl:mytarget"
@@ -52,7 +54,12 @@ EXAMPLES = r"""
         authmethod: "CHAP"
         auth: 3
 
-- name: Delete target
+- name: Delete a target by name
+  iscsi_target:
+    state: absent
+    name: "iqn.2005-10.org.freenas.ctl:mytarget"
+
+- name: Delete a target by ID
   iscsi_target:
     state: absent
     id: 10
@@ -87,89 +94,135 @@ def main():
     mw = MW.client()
     result = dict(changed=False, msg="")
 
-    params = module.params
-    state = params["state"]
-    tid = params["id"]
+    p = module.params
+    state = p["state"]
+    tid = p["id"]
+    name = p["name"]
 
-    def find_target_by_id(tid):
-        try:
-            recs = mw.call("iscsi.target.query", [["id", "=", tid]])
-            return recs[0] if recs else None
-        except Exception as e:
-            module.fail_json(msg=f"Error querying iSCSI target (id={tid}): {e}")
+    # gather all targets for name-based lookup
+    try:
+        all_targets = mw.call("iscsi.target.query")
+    except Exception as e:
+        module.fail_json(msg=f"Error listing iSCSI targets: {e}")
 
-    existing = None
-    if tid:
-        existing = find_target_by_id(tid)
+    def find_target_by_id(ident):
+        for t in all_targets:
+            if t["id"] == ident:
+                return t
+        return None
 
-    # absent
+    def find_targets_by_name(n):
+        matches = []
+        for t in all_targets:
+            if (t["name"] or "") == (n or ""):
+                matches.append(t)
+        return matches
+
+    # -------------------------------------------------------------
+    # state=absent
+    # -------------------------------------------------------------
     if state == "absent":
-        if not tid:
-            module.fail_json(msg="id is required to delete an iSCSI target.")
+        existing = None
+        if tid is not None:
+            existing = find_target_by_id(tid)
+        elif name:
+            matches = find_targets_by_name(name)
+            if len(matches) > 1:
+                module.fail_json(
+                    msg=f"Multiple iSCSI targets found with name='{name}'. Provide 'id' to disambiguate."
+                )
+            elif len(matches) == 1:
+                existing = matches[0]
+
         if not existing:
             result["changed"] = False
-            result["msg"] = f"Target {tid} does not exist."
+            result["msg"] = "Target not found; nothing to delete."
+            module.exit_json(**result)
         else:
             if module.check_mode:
-                result["msg"] = f"Would have deleted target {tid}"
+                result["msg"] = (
+                    f"Would delete iSCSI target id={existing['id']} name={existing['name']}"
+                )
             else:
                 try:
-                    mw.call("iscsi.target.delete", tid, {"force": False})
-                    result["msg"] = f"Deleted iSCSI target {tid}"
+                    mw.call("iscsi.target.delete", existing["id"], {"force": False})
+                    result["msg"] = (
+                        f"Deleted iSCSI target {existing['id']} name={existing['name']}"
+                    )
                 except Exception as e:
-                    module.fail_json(msg=f"Error deleting target {tid}: {e}")
+                    module.fail_json(msg=f"Error deleting target {existing['id']}: {e}")
             result["changed"] = True
-        module.exit_json(**result)
+            module.exit_json(**result)
 
-    # present
+    # -------------------------------------------------------------
+    # state=present
+    # -------------------------------------------------------------
+    existing = None
+    if tid is not None:
+        existing = find_target_by_id(tid)
+    else:
+        # lookup by name
+        if not name:
+            module.fail_json(msg="Must provide 'id' or 'name' to manage iSCSI target.")
+        matches = find_targets_by_name(name)
+        if len(matches) > 1:
+            module.fail_json(
+                msg=f"Multiple iSCSI targets found with name='{name}'. Provide 'id' instead."
+            )
+        elif len(matches) == 1:
+            existing = matches[0]
+
     if existing:
         # update
+        tid = existing["id"]
         updates = {}
-        if params["name"] is not None and existing.get("name") != params["name"]:
-            updates["name"] = params["name"]
-        if params["alias"] is not None and existing.get("alias") != params["alias"]:
-            updates["alias"] = params["alias"]
-        if params["mode"] is not None and existing.get("mode") != params["mode"]:
-            updates["mode"] = params["mode"]
-        if params["groups"] is not None and existing.get("groups") != params["groups"]:
-            updates["groups"] = params["groups"]
+        if p["name"] is not None and existing.get("name") != p["name"]:
+            updates["name"] = p["name"]
+        if p["alias"] is not None and existing.get("alias") != p["alias"]:
+            updates["alias"] = p["alias"]
+        if p["mode"] is not None and existing.get("mode") != p["mode"]:
+            updates["mode"] = p["mode"]
+        if p["groups"] is not None and existing.get("groups") != p["groups"]:
+            updates["groups"] = p["groups"]
 
         if not updates:
             result["changed"] = False
             result["target"] = existing
-            result["msg"] = "No changes needed."
+            result["msg"] = f"No changes needed for target id={tid}"
         else:
             if module.check_mode:
-                result["msg"] = f"Would have updated target {tid} with {updates}"
+                result["msg"] = f"Would update iSCSI target {tid} with {updates}"
                 result["changed"] = True
             else:
                 try:
                     updated = mw.call("iscsi.target.update", tid, updates)
                     result["target"] = updated
-                    result["msg"] = f"Updated iSCSI target {tid}"
+                    result["msg"] = f"Updated iSCSI target id={tid}"
                     result["changed"] = True
                 except Exception as e:
                     module.fail_json(msg=f"Error updating target {tid}: {e}")
     else:
-        # create
-        if not params["name"]:
-            module.fail_json(msg="name is required to create an iSCSI target.")
-        payload = {"name": params["name"]}
-        if params["alias"] is not None:
-            payload["alias"] = params["alias"]
-        if params["mode"] is not None:
-            payload["mode"] = params["mode"]
-        if params["groups"] is not None:
-            payload["groups"] = params["groups"]
+        # create new
+        if not name:
+            module.fail_json(
+                msg="iSCSI target 'name' is required when creating a new target."
+            )
+        payload = {"name": name}
+        if p["alias"] is not None:
+            payload["alias"] = p["alias"]
+        if p["mode"] is not None:
+            payload["mode"] = p["mode"]
+        if p["groups"] is not None:
+            payload["groups"] = p["groups"]
 
         if module.check_mode:
-            result["msg"] = f"Would have created new iSCSI target: {payload}"
+            result["msg"] = f"Would create new iSCSI target: {payload}"
             result["changed"] = True
         else:
             try:
                 created = mw.call("iscsi.target.create", payload)
                 result["target"] = created
-                result["msg"] = "Created new iSCSI target"
+                result["msg"] = f"Created new iSCSI target with name='{name}'"
                 result["changed"] = True
             except Exception as e:
                 module.fail_json(msg=f"Error creating iSCSI target: {e}")
