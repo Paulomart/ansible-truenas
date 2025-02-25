@@ -34,7 +34,7 @@ options:
     type: int
   listen:
     description:
-      - List of dicts describing listen addresses, e.g. {"ip": "0.0.0.0", "port": 3260}.
+      - List of dicts describing listen addresses, e.g. {"ip": "0.0.0.0"}.
     type: list
     elements: dict
 """
@@ -47,9 +47,7 @@ EXAMPLES = r"""
     discovery_authmethod: "NONE"
     listen:
       - ip: "0.0.0.0"
-        port: 3260
       - ip: "::"
-        port: 3260
 
 - name: Delete portal
   iscsi_portal:
@@ -173,7 +171,7 @@ def main():
             payload["listen"] = params["listen"]
         else:
             # Provide a default
-            payload["listen"] = [{"ip": "0.0.0.0", "port": 3260}]
+            payload["listen"] = [{"ip": "0.0.0.0"}]
 
         if module.check_mode:
             result["msg"] = f"Would have created new portal: {payload}"
