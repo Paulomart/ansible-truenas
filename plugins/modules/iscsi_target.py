@@ -8,6 +8,7 @@ short_description: Manage iSCSI Targets (by id or by unique name)
 description:
   - Create, update, and delete iSCSI Targets.
   - If C(id) is not provided, the module attempts to find an existing target by its unique C(name).
+  - Supports a deep compare for C(groups) to detect changes even if the lists are in different order.
 version_added: "1.4.3"
 options:
   state:
@@ -23,11 +24,12 @@ options:
     type: int
   name:
     description:
-      - iSCSI target name (often an IQN, e.g. iqn.2005-10.org.freenas.ctl:mytarget) must be unique.
+      - iSCSI target name (often an IQN, e.g. C(iqn.2005-10.org.freenas.ctl:mytarget)), must be unique.
+      - Used for name-based lookups if C(id) is not provided.
     type: str
   alias:
     description:
-      - Optional alias.
+      - Optional alias for the target.
     type: str
   mode:
     description:
@@ -36,9 +38,35 @@ options:
     choices: [ ISCSI, FC, BOTH ]
   groups:
     description:
-      - List of group dictionaries: {portal: <id>, initiator: <id>, authmethod: <CHAP|NONE|...>, auth: <id>}
+      - List of group dictionaries that define how this target is associated with portals, initiators,
+        and iSCSI auth records.
+      - When provided, this list is compared to the existing groups in a way that ignores the order
+        of items and keys.
+      - If the existing groups differ in any way from the desired configuration, the module updates
+        them. If you do not specify C(groups), the existing groups remain unchanged.
     type: list
     elements: dict
+    suboptions:
+      portal:
+        description:
+          - The numeric ID of an existing iSCSI portal resource.
+            E.g., if a portal was created with ID=1, set C(portal: 1).
+        type: int
+      initiator:
+        description:
+          - The numeric ID of an existing iSCSI initiator resource.
+            E.g., if an initiator was created with ID=2, set C(initiator: 2).
+        type: int
+      authmethod:
+        description:
+          - The authentication method to use for this group.
+        type: str
+        choices: [ NONE, CHAP, CHAP_MUTUAL ]
+      auth:
+        description:
+          - The numeric ID of an iSCSI auth record (CHAP credentials) if needed.
+        type: int
+      # Other optional keys may exist in the system, but these are the most common ones.
 """
 
 EXAMPLES = r"""
@@ -58,11 +86,6 @@ EXAMPLES = r"""
   iscsi_target:
     state: absent
     name: "iqn.2005-10.org.freenas.ctl:mytarget"
-
-- name: Delete a target by ID
-  iscsi_target:
-    state: absent
-    id: 10
 """
 
 RETURN = r"""
@@ -86,7 +109,19 @@ def main():
             name=dict(type="str"),
             alias=dict(type="str"),
             mode=dict(type="str", choices=["ISCSI", "FC", "BOTH"]),
-            groups=dict(type="list", elements="dict"),
+            groups=dict(
+                type="list",
+                elements="dict",
+                options=dict(
+                    portal=dict(type="int"),
+                    initiator=dict(type="int"),
+                    authmethod=dict(
+                        type="str", choices=["NONE", "CHAP", "CHAP_MUTUAL"]
+                    ),
+                    auth=dict(type="int"),
+                    # You could add more fields here if your system supports them
+                ),
+            ),
         ),
         supports_check_mode=True,
     )
@@ -99,7 +134,7 @@ def main():
     tid = p["id"]
     name = p["name"]
 
-    # gather all targets for name-based lookup
+    # Retrieve all targets to enable name-based lookup
     try:
         all_targets = mw.call("iscsi.target.query")
     except Exception as e:
@@ -118,9 +153,28 @@ def main():
                 matches.append(t)
         return matches
 
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # Helper: normalize groups for a deep-compare ignoring ordering
+    # ----------------------------------------------------------------
+    def normalize_groups(grp_list):
+        """
+        Returns a list of tuples, where each tuple is a sorted version of the dict.
+        The overall list is also sorted, so differences in order won't matter.
+        """
+        if not grp_list:
+            return []
+        normalized = []
+        for item in grp_list:
+            # Convert item (dict) -> sorted tuple of (key, value) pairs
+            sorted_items = tuple(sorted(item.items()))
+            normalized.append(sorted_items)
+        # sort the list of tuples so ordering among groups won't matter
+        normalized.sort()
+        return normalized
+
+    # ----------------------------------------------------------------
     # state=absent
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
     if state == "absent":
         existing = None
         if tid is not None:
@@ -154,9 +208,9 @@ def main():
             result["changed"] = True
             module.exit_json(**result)
 
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
     # state=present
-    # -------------------------------------------------------------
+    # ----------------------------------------------------------------
     existing = None
     if tid is not None:
         existing = find_target_by_id(tid)
@@ -173,8 +227,7 @@ def main():
             existing = matches[0]
 
     if existing:
-        # update
-        tid = existing["id"]
+        # Update the existing target
         updates = {}
         if p["name"] is not None and existing.get("name") != p["name"]:
             updates["name"] = p["name"]
@@ -182,27 +235,34 @@ def main():
             updates["alias"] = p["alias"]
         if p["mode"] is not None and existing.get("mode") != p["mode"]:
             updates["mode"] = p["mode"]
-        if p["groups"] is not None and existing.get("groups") != p["groups"]:
-            updates["groups"] = p["groups"]
+
+        # Compare groups with a deep compare ignoring ordering
+        if p["groups"] is not None:
+            existing_groups_norm = normalize_groups(existing.get("groups"))
+            desired_groups_norm = normalize_groups(p["groups"])
+            if existing_groups_norm != desired_groups_norm:
+                updates["groups"] = p["groups"]
 
         if not updates:
             result["changed"] = False
             result["target"] = existing
-            result["msg"] = f"No changes needed for target id={tid}"
+            result["msg"] = f"No changes needed for target id={existing['id']}"
         else:
             if module.check_mode:
-                result["msg"] = f"Would update iSCSI target {tid} with {updates}"
+                result["msg"] = (
+                    f"Would update iSCSI target {existing['id']} with {updates}"
+                )
                 result["changed"] = True
             else:
                 try:
-                    updated = mw.call("iscsi.target.update", tid, updates)
+                    updated = mw.call("iscsi.target.update", existing["id"], updates)
                     result["target"] = updated
-                    result["msg"] = f"Updated iSCSI target id={tid}"
+                    result["msg"] = f"Updated iSCSI target id={existing['id']}"
                     result["changed"] = True
                 except Exception as e:
-                    module.fail_json(msg=f"Error updating target {tid}: {e}")
+                    module.fail_json(msg=f"Error updating target {existing['id']}: {e}")
     else:
-        # create new
+        # Create new target
         if not name:
             module.fail_json(
                 msg="iSCSI target 'name' is required when creating a new target."
