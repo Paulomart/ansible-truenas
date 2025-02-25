@@ -88,6 +88,17 @@ def main():
     filters = module.params["filters"]
     params = module.params["params"]
 
+    for filter in filters:
+        if len(filter) != 3:
+            module.fail_json(
+                msg=f"Invalid filter {filter}: must be a list of 3 elements"
+            )
+
+        try:
+            filter[2] = int(filter[2])
+        except ValueError:
+            pass
+
     # For many "something.query" methods, the first argument is a list of filters,
     # and the second argument (optional) is a dictionary with additional options.
     # Example usage: mw.call("iscsi.portal.query", [filters, params])
