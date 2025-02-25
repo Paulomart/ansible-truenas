@@ -101,7 +101,7 @@ def main():
         if module.check_mode:
             # We do not actually call the middleware in check mode, just pretend
             module.exit_json(changed=False, json_result=[])
-        result_data = mw.call(method, call_args)
+        result_data = mw.call(method, *call_args)
     except Exception as e:
         module.fail_json(
             msg=f"Failed to call {method} with filters={filters}, params={params}: {e}"
